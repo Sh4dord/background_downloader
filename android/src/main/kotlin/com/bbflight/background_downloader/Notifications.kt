@@ -397,8 +397,32 @@ object NotificationService {
     }
 
     /**
-     * Process the queue, one by one, but collapsing progress updates
-     * for the same notificationId
+     * Process the queue, one by one, collapsing redundant updates for the
+     * same notificationId.
+     *
+     * The 300 ms throttle (`MIN_NOTIFICATION_INTERVAL_MS`) limits rendering to
+     * ~3 notifications per second. Without smart debouncing, a burst of
+     * completions in a group notification (one notify() per finished task)
+     * causes a long visible lag: the notification body shows stale
+     * `{numFinished}/{numTotal}` counters while the work is already done.
+     *
+     * The collapse logic now treats any subsequent NotificationData targeting
+     * the same `notificationId` as a strict superseder, regardless of its
+     * type. This is safe because:
+     *  - For **group notifications**, all tasks in the group share the
+     *    notification slot (`groupNotification.notificationId`), and the body
+     *    is built from the current group state at the time the builder was
+     *    constructed; the latest builder reflects the latest state, so older
+     *    entries can be dropped without losing visible information.
+     *  - For **individual task notifications**, every task has its own
+     *    notificationId, so this loop only collapses repeated updates for the
+     *    same task (e.g. running → running, or a redundant emission of the
+     *    same terminal state).
+     *
+     * Removal notifications (where `builder == null`) act as an explicit
+     * "stop" for that slot. We still collapse them in: a removal supersedes
+     * earlier updates for the same id, and any update queued *after* the
+     * removal is itself the latest state and wins.
      */
     private suspend fun processQueue() {
         while (true) {
@@ -411,23 +435,16 @@ object NotificationService {
                     return@withLock null
                 }
                 var candidate = pendingNotifications.removeFirst()
-                // if the candidate is a progress update, check if there are more
-                // progress updates for the same notificationId in the queue
-                // and if so, use the last one
-                if (candidate.notificationType == NotificationType.running) {
-                    val iterator = pendingNotifications.iterator()
-                    while (iterator.hasNext()) {
-                        val next = iterator.next()
-                        if (next.taskWorker.notificationId == candidate.taskWorker.notificationId) {
-                            if (next.notificationType == NotificationType.running) {
-                                // Found a newer progress update, supersede the current candidate
-                                candidate = next
-                                iterator.remove()
-                            } else {
-                                // Found a non-running update (barrier), stop looking for this task
-                                break
-                            }
-                        }
+                // Collapse later entries for the same notification slot,
+                // regardless of NotificationType. The latest entry wins,
+                // because its builder was assembled from the most recent
+                // state of the (group) notification.
+                val iterator = pendingNotifications.iterator()
+                while (iterator.hasNext()) {
+                    val next = iterator.next()
+                    if (next.taskWorker.notificationId == candidate.taskWorker.notificationId) {
+                        candidate = next
+                        iterator.remove()
                     }
                 }
                 candidate
