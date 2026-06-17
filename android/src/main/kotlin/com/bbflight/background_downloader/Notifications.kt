@@ -102,12 +102,14 @@ class GroupNotification(
      */
     val progress get() = if (numTotal == 0) 2.0 else numFinished.toDouble() / numTotal.toDouble()
 
-    /** Number of "finished" notifications in this group.
+    /** Number of successfully completed notifications in this group.
      *
-     * A "finished" notification is one that is not .running,
-     * so includes .complete, .error, .paused
+     * Only counts `.complete`. Errors, canceled and paused entries are
+     * tracked separately and intentionally excluded from this counter so
+     * the `{numFinished}` token reflects "files downloaded", not "files no
+     * longer running".
      * */
-    val numFinished get() = notifications.filter { (_, v) -> v != NotificationType.running }.size
+    val numFinished get() = notifications.filter { (_, v) -> v == NotificationType.complete }.size
 
     /** Number of "failed" notifications in this group.
      *
@@ -115,8 +117,15 @@ class GroupNotification(
      * */
     val numFailed get() = notifications.filter { (_, v) -> v == NotificationType.error }.size
 
-    /** True if all tasks finished, regardless of outcome */
-    val isFinished get() = numFinished == numTotal
+    /** True if no task is currently `.running` in this group, regardless of
+     * outcome (complete, error, paused, canceled all count as finished).
+     *
+     * Decoupled from `numFinished == numTotal` because that identity no
+     * longer holds: `numFinished` now counts only successful completions,
+     * but a group is still considered "done" when every entry has reached
+     * a terminal state (e.g. complete + error mix).
+     * */
+    val isFinished get() = notifications.values.none { it == NotificationType.running }
 
     /**
      * Return true if this group has an error
@@ -591,26 +600,42 @@ object NotificationService {
     }
 
     /**
-     * Register that [item] was enqueued, with [success] or failure
+     * Register that [item] was enqueued, with [success] or failure.
      *
-     * This is only relevant for tasks that are part of a group notification, so that the
-     * 'numTotal' count is based on enqueued tasks, not on running tasks (which may be limited
-     * by holdingQueue or OS restrictions).
+     * This is only relevant for tasks that are part of a group notification,
+     * so that the `numTotal` count is based on enqueued tasks, not on running
+     * tasks (which may be limited by holdingQueue or OS restrictions).
+     *
+     * Historically this spawned a `OneTimeWorkRequest<UpdateNotificationWorker>`
+     * per task so we could reach the [NotificationService] from a non-worker
+     * context. With a holding queue and a batch enqueue (think a 1000-file
+     * offline sync), that floods `WorkManager` with one notification worker
+     * per task. Those workers share the same thread pool as the actual
+     * download workers — so downloads sat behind a wall of notification
+     * updates and the user perceived a long delay before any file started
+     * transferring.
+     *
+     * We now run the update inline on the service's coroutine scope via a
+     * minimal [TaskJobContext] implementation that only knows how to talk to
+     * the [NotificationService]. The `WorkManager` queue keeps the slots
+     * available for the [TaskWorker] instances that actually do work.
      */
     fun registerEnqueue(item: EnqueueItem, success: Boolean) {
         val notificationConfigJsonString = item.notificationConfigJsonString ?: return
         val notificationConfig =
             Json.decodeFromString<NotificationConfig>(notificationConfigJsonString)
         val groupNotificationId = notificationConfig.groupNotificationId
-        if (groupNotificationId.isNotEmpty()) {
-            // update the notification status for this task (requires a worker because we are
-            // not within a worker when this function is called)
-            createUpdateNotificationWorker(
-                context = item.context,
-                taskJson = Json.encodeToString(item.task),
-                notificationConfigJson = notificationConfigJsonString,
-                taskStatusOrdinal = if (success) TaskStatus.enqueued.ordinal else TaskStatus.failed.ordinal
-            )
+        if (groupNotificationId.isEmpty()) return
+
+        val taskStatus = if (success) TaskStatus.enqueued else TaskStatus.failed
+        val taskContext = RegisterEnqueueContext(
+            appContext = item.context,
+            initialTask = item.task,
+            initialNotificationConfig = notificationConfig,
+            initialNotificationConfigJsonString = notificationConfigJsonString,
+        )
+        scope.launch {
+            updateNotification(taskContext, taskStatus)
         }
     }
 
@@ -1124,3 +1149,66 @@ data class NotificationData(
     val notificationType: NotificationType?,
     val builder: Builder?
 )
+
+/**
+ * Minimal [TaskJobContext] used by [NotificationService.registerEnqueue] so
+ * the notification update can run inline on the service's coroutine scope
+ * instead of via a `OneTimeWorkRequest<UpdateNotificationWorker>`.
+ *
+ * Spawning a worker per enqueue floods `WorkManager` with notification jobs
+ * during a batch enqueue (e.g. a 1000-file offline sync), which monopolises
+ * the worker thread pool and delays the actual download tasks. This context
+ * carries only what `updateNotification` needs to reach the group
+ * notification path; `runInForeground` is forced to `false` so the call is
+ * routed through plain `notify()` rather than through the foreground service
+ * attachment path (which requires an active worker).
+ */
+private class RegisterEnqueueContext(
+    override val appContext: android.content.Context,
+    initialTask: Task,
+    initialNotificationConfig: NotificationConfig,
+    initialNotificationConfigJsonString: String?
+) : TaskJobContext {
+    override var task: Task = initialTask
+    override var notificationConfig: NotificationConfig? = initialNotificationConfig
+    override var notificationId: Int = 0
+    override var notificationProgress: Double = 0.0
+    override var networkSpeed: Double = 0.0
+    override var taskCanResume: Boolean = false
+    override var notificationConfigJsonString: String? =
+        initialNotificationConfigJsonString
+    override val isTaskStopped: Boolean = false
+
+    // Force the foreground-service code path off — we are not running inside
+    // a worker, so we cannot attach a notification to one.
+    override var runInForeground: Boolean = false
+    override val isActive: Boolean = false
+
+    override suspend fun setForegroundNotification(
+        notificationId: Int,
+        notification: android.app.Notification,
+        notificationType: Int
+    ) {
+        // No-op — no worker to attach a foreground notification to.
+    }
+
+    override fun getInputLong(key: String, defaultValue: Long): Long = defaultValue
+
+    override fun getInputString(key: String): String? = null
+
+    override suspend fun updateNotification(
+        task: Task,
+        status: TaskStatus,
+        progress: Double,
+        timeRemaining: Long
+    ) {
+        NotificationService.updateNotification(this, status, progress, timeRemaining)
+    }
+
+    override fun updateEstimatedNetworkBytes(
+        downloadBytes: Long,
+        uploadBytes: Long
+    ) {
+        // No-op — used only for UIDT jobs.
+    }
+}
