@@ -681,8 +681,16 @@ object NotificationService {
                 }
                 val builder = Builder(
                     taskWorker.appContext, notificationChannelId
-                ).setPriority(NotificationCompat.PRIORITY_LOW).setSmallIcon(iconDrawable)
+                ).setPriority(NotificationCompat.PRIORITY_LOW)
+                    .setSmallIcon(iconDrawable)
                     .setShowWhen(isFinished)
+                    // Treat the group notification as a continuously-updated
+                    // slot rather than a stream of fresh notifications. Without
+                    // this flag every counter change is treated as a new
+                    // notification by Android (some OEM skins animate the
+                    // entire row out and back in), which the user perceives as
+                    // a "delete and re-create" rather than an update.
+                    .setOnlyAlertOnce(true)
                 // title and body interpolation of tokens
                 val progress = groupNotification.progress
                 val title = replaceTokens(
@@ -973,9 +981,21 @@ object NotificationService {
                         notify(taskWorker.notificationId, androidNotification)
                     }
                 } else {
-                    // to prevent the 'not running' notification getting killed as the foreground
-                    // process is terminated, this notification is shown regularly, but with
-                    // a delay
+                    // The worker that just finished is detaching its FGS. If
+                    // it was the last worker holding the group notification
+                    // id, the system will silently remove the notification.
+                    //
+                    // Two-step notify:
+                    //  1. Notify immediately so any *concurrent* worker still
+                    //     holding the FGS sees the updated content (group
+                    //     state moved to complete/error/etc.) without a gap.
+                    //  2. Notify again after a short delay so that if THIS
+                    //     worker's FGS detachment did remove the notification,
+                    //     we put it back. The previous single delayed-notify
+                    //     left the notification invisible during the gap,
+                    //     which Android UI surfaces as a "delete and re-show"
+                    //     animation rather than a silent update.
+                    notify(taskWorker.notificationId, androidNotification)
                     delay(200)
                     notify(taskWorker.notificationId, androidNotification)
                 }
