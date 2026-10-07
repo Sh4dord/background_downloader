@@ -690,6 +690,12 @@ final class AndroidDownloader extends NativeDownloader {
           fileSize,
         );
 
+      case (Config.groupUIDT, final bool activate):
+        await NativeDownloader.methodChannel.invokeMethod(
+          'configGroupUIDT',
+          activate,
+        );
+
       case (Config.bypassTLSCertificateValidation, final bool bypass):
         if (bypass) {
           if (kReleaseMode) {

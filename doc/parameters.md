@@ -86,6 +86,25 @@ To use UIDT on Android 14+, declare the following in `android/app/src/main/Andro
     android:foregroundServiceType="dataSync" />
 ```
 
+#### Group UIDT (one job for a group of tasks)
+By default every UIDT task runs in its own job. When transferring many files as one user action (e.g. syncing a folder), activate `(Config.groupUIDT, true)` in the `androidConfig`: on Android 14+, tasks with priority 0 that share a group notification (`configureNotificationForGroup` with a `groupNotificationId`) then run in a **single** UIDT job per group:
+- the number of scheduled jobs stays at one per group, well below JobScheduler's limit of 150 scheduled jobs per app
+- a UIDT job can only be scheduled while the app is visible to the user, but tasks enqueued while the group job is running - including from the background, e.g. when the holding queue releases them - are added to the running job
+- the group notification is attached to the job, so the user sees a single notification
+
+```dart
+await FileDownloader().configure(androidConfig: [(Config.groupUIDT, true)]);
+FileDownloader().configureNotificationForGroup('sync',
+    running: const TaskNotification('Syncing', '{numFinished} of {numTotal}'),
+    complete: const TaskNotification('Sync complete', '{numTotal} files'),
+    progressBar: true,
+    groupNotificationId: 'sync');
+await FileDownloader().enqueueAll(
+    [for (final url in urls) DownloadTask(url: url, group: 'sync', priority: 0)]);
+```
+
+Only the `RUN_USER_INITIATED_JOBS` permission is required; the `GroupUIDTJobService` is declared by the plugin. Tasks requiring WiFi run in a second job for the same group (a job has a single network constraint). Concurrency within the job follows the holding queue if configured, and is otherwise capped at 10 tasks. `ParallelDownloadTask` is not supported and, like tasks enqueued when the group job cannot be scheduled (e.g. app not visible), falls back to the regular behavior.
+
 ### `allowPause`
 When `true`, enables manual pausing via `transfer.pause()` or `FileDownloader().pause(task)`, and allows the downloader to recover and resume interrupted downloads when connectivity changes.
 

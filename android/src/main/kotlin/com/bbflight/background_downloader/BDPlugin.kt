@@ -102,6 +102,8 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             "com.bbflight.background_downloader.config.skipExistingFiles"
         const val keyConfigTempFilePath =
             "com.bbflight.background_downloader.config.tempFilePath"
+        const val keyConfigGroupUIDT =
+            "com.bbflight.background_downloader.config.groupUIDT"
 
 
         @SuppressLint("StaticFieldLeak")
@@ -192,6 +194,24 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             }
 
             var success = false
+            // Group UIDT: run all tasks sharing a group notification in a single UIDT job
+            var useGroupJob = false
+            if (GroupUIDT.isEligible(context, task, notificationConfigJsonString)) {
+                useGroupJob = GroupUIDT.enqueue(
+                    context,
+                    task,
+                    notificationConfigJsonString!!,
+                    resumeData,
+                    taskRequiresWifi
+                )
+                if (useGroupJob) {
+                    notificationConfigJsonStrings[task.taskId] = notificationConfigJsonString
+                    useJobScheduler = false
+                    success = true
+                } else {
+                    Log.i(TAG, "Could not use group UIDT for taskId ${task.taskId}, falling back")
+                }
+            }
             if (useJobScheduler) {
                 try {
                     val jobScheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
@@ -243,7 +263,7 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                     useJobScheduler = false
                 }
             }
-            if (!useJobScheduler) {
+            if (!useJobScheduler && !useGroupJob) {
                 // Use WorkManager
                 val dataBuilder = Data.Builder().putString(TaskWorker.keyTask, taskToJsonString(task))
                 if (notificationConfigJsonString != null) {
@@ -406,6 +426,10 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         ): Boolean {
             // cancel chunk tasks if this is a ParallelDownloadTask
             parallelDownloadTaskWorkers[taskId]?.cancelAllChunkTasks()
+
+            if (GroupUIDT.cancelTask(context, taskId)) {
+                return true
+            }
 
             var jobCanceled = false
             if (Build.VERSION.SDK_INT >= 34) {
@@ -680,6 +704,7 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                     "configHoldingQueue" -> methodConfigHoldingQueue(call)
                     "configSkipExistingFiles" -> methodConfigSkipExistingFiles(call)
                     "configTempFilePath" -> methodConfigTempFilePath(call)
+                    "configGroupUIDT" -> methodConfigGroupUIDT(call)
                     "platformVersion" -> methodPlatformVersion()
                     "forceFailPostOnBackgroundChannel" -> methodForceFailPostOnBackgroundChannel(
                         call
@@ -877,6 +902,11 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             workManager.cancelWorkById(workInfo.id)
             counter++
         }
+        for (task in GroupUIDT.allTasks(applicationContext, group)) {
+            if (GroupUIDT.cancelTask(applicationContext, task.taskId)) {
+                counter++
+            }
+        }
         if (Build.VERSION.SDK_INT >= 34) {
             val jobScheduler =
                 applicationContext.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
@@ -972,6 +1002,8 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                     }
                 }
             }
+            GroupUIDT.allTasks(applicationContext, group)
+                .forEach { tasksAsListOfJsonStrings.add(bdJson.encodeToString(it)) }
             holdingQueue?.stateMutex?.unlock()
             Log.v(
                 TAG,
@@ -1491,6 +1523,23 @@ class BDPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         return null
     }
 
+
+    /**
+     * Store the group UIDT config in shared preferences
+     *
+     * When true, on Android 14+ tasks with priority 0 that share a group notification run
+     * in a single User Initiated Data Transfer job. See [GroupUIDT]
+     */
+    private suspend fun methodConfigGroupUIDT(call: MethodCall): Any? {
+        withContext(defaultScope.coroutineContext) {
+            val activate = call.arguments as Boolean
+            PreferenceManager.getDefaultSharedPreferences(applicationContext).edit {
+                putBoolean(keyConfigGroupUIDT, activate)
+            }
+            Log.v(TAG, "${if (activate) "Enabled" else "Disabled"} group UIDT")
+        }
+        return null
+    }
 
     /**
      * Configure the holding queue

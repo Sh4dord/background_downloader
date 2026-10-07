@@ -633,6 +633,13 @@ final class Config {
   /// Config string for holding queue
   static const holdingQueue = 'holdingQueue';
 
+  /// Config string for group User Initiated Data Transfer (Android 14+ only)
+  ///
+  /// When `true`, tasks with priority 0 that share a group notification (see
+  /// [FileDownloader.configureNotificationForGroup] with a `groupNotificationId`)
+  /// run in a single UIDT job per group, instead of one UIDT job per task.
+  static const groupUIDT = 'groupUIDT';
+
   /// Config string for skip existing files
   static const skipExistingFiles = 'skipExistingFiles';
 

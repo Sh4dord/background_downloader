@@ -50,6 +50,8 @@ The following configurations are supported:
   
   - `(Config.runInForeground, bool activate)` or `(Config.runInForeground, Config.always)` or `(Config.runInForeground, Config.never)` activates or de-activates foreground mode for all tasks.
   - `(Config.runInForegroundIfFileLargerThan, int fileSize)` activates foreground mode for downloads/uploads that exceed this file size, expressed in MB.
+* [Android] Group User Initiated Data Transfer (Android 14+)
+  - `(Config.groupUIDT, bool activate)` runs all tasks with priority 0 that share a group notification (with a `groupNotificationId`) in a single UIDT job, instead of one UIDT job per task. See [priority](parameters.md#priority) for details
 * [Android] Use external storage. 
 
   Either your app runs in default (internal storage) mode, or in external storage. You cannot switch between internal and external, as the directory structure that - for example - `BaseDirectory.applicationDocuments` refers to is different in each mode

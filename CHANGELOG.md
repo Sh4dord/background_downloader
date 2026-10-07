@@ -1,3 +1,7 @@
+## Unreleased
+
+* [Android] Add `Config.groupUIDT`: on Android 14+, tasks with priority 0 that share a group notification run in a single User Initiated Data Transfer job per group, instead of one job per task. Keeps the job count below JobScheduler's per-app limit for large batches, lets tasks join the running job while the app is in the background (e.g. released by the holding queue), and attaches the group notification to the job
+
 ## 9.6.4
 
 * [Android] Reuse pre-created notification channel and preserve its importance (#732, #733)

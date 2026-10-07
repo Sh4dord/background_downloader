@@ -46,6 +46,7 @@ The Android implementation is written in Kotlin and resides in `android/src/main
 3.  **`JobScheduler` (UIDT)**:
     *   For Android 14+ (API 34+), "User Initiated Data Transfer" (UIDT) is supported via `UIDTJobService`. This is used for high-priority tasks requiring immediate execution.
     *   It bypasses `WorkManager` for these specific cases to comply with stricter Android foreground service restrictions.
+    *   With `Config.groupUIDT`, tasks sharing a group notification run in a single job via `GroupUIDTJobService`. `GroupUIDT` keeps a persisted queue of task ids per job, and each task runs its `TaskRunner` with a `GroupUIDTTaskContext`, which attaches the group notification to the job.
 4.  **`HoldingQueue`**:
     *   A buffer that holds tasks before submitting them to `WorkManager`. This allows for concurrency control (limiting max concurrent downloads) which `WorkManager` does not natively support with the granularity required (e.g., by host or group).
 5.  **Notifications**:

@@ -305,6 +305,12 @@ class HoldingQueue(private val context: Context, private val workManager: WorkMa
                       }
                  }
             }
+            // Group UIDT jobs (tasks running in or queued for a shared job)
+            for (task in GroupUIDT.activeTasksSnapshot()) {
+                totalCount++
+                concurrentByHost.getOrPut(task.host()) { AtomicInteger(0) }.incrementAndGet()
+                concurrentByGroup.getOrPut(task.group) { AtomicInteger(0) }.incrementAndGet()
+            }
             concurrent.set(totalCount)
         }
     }
