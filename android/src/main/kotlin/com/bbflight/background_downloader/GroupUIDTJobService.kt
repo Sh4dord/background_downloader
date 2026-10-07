@@ -18,6 +18,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 
@@ -103,12 +104,18 @@ class GroupUIDTJobService : JobService() {
         /** Runs pending tasks until there are none left, or the job is stopped */
         suspend fun run() {
             val appContext = service.applicationContext
+            var allowClose = false
             while (!isStopped) {
                 val capacity = max(0, GroupUIDT.maxConcurrentPerJob - runningCount)
-                val next = GroupUIDT.nextTasks(appContext, this, capacity) ?: break
+                val next = GroupUIDT.nextTasks(appContext, this, capacity, allowClose) ?: break
                 if (next.isEmpty() && runningCount == 0) {
-                    continue // pending tasks were skipped, re-evaluate
+                    // idle: wait briefly for new tasks, then close if none arrived
+                    allowClose = withTimeoutOrNull(GroupUIDT.idleGraceMillis) {
+                        wakeChannel.receive()
+                    } == null
+                    continue
                 }
+                allowClose = false
                 if (next.isNotEmpty()) {
                     Log.v(TAG, "Starting ${next.size} tasks in $jobKey, $runningCount running")
                 }

@@ -66,6 +66,15 @@ object GroupUIDT {
     /** Safety cap on the number of tasks running concurrently in one job */
     const val maxConcurrentPerJob = 10
 
+    /**
+     * Time an idle job waits for new tasks before finishing
+     *
+     * When the last running task finishes, the holding queue may release the next
+     * task(s) asynchronously. Lingering briefly lets those join the running job, which
+     * matters when the app is in the background: a new UIDT job could not be scheduled
+     */
+    const val idleGraceMillis = 3000L
+
     private val supportedTaskTypes = setOf(
         "DownloadTask", "UriDownloadTask", "UploadTask", "UriUploadTask",
         "MultiUploadTask", "DataTask"
@@ -249,20 +258,24 @@ object GroupUIDT {
      * Moves up to [capacity] pending tasks of the job for [handle] to the running list
      * and returns them, with their notification config and resume data
      *
-     * If there is nothing pending and nothing running, the [handle] is closed and
-     * unregistered (atomically, so that a concurrent [enqueue] schedules a new job)
-     * and null is returned
+     * If there is nothing pending and nothing running, an empty list is returned, unless
+     * [allowClose] is true: then the [handle] is closed and unregistered (atomically, so
+     * that a concurrent [enqueue] schedules a new job) and null is returned
      */
     internal suspend fun nextTasks(
         context: Context,
         handle: GroupUIDTJobService.JobHandle,
-        capacity: Int
+        capacity: Int,
+        allowClose: Boolean
     ): List<Triple<Task, String, ResumeData?>>? {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         return mutex.withLock {
             val states = loadedStates(prefs)
             val state = states[handle.jobKey]
             if (state == null || (state.pending.isEmpty() && handle.runningCount == 0)) {
+                if (!allowClose) {
+                    return@withLock emptyList()
+                }
                 if (state != null && state.running.isEmpty()) {
                     states.remove(handle.jobKey)
                     persist(prefs)
